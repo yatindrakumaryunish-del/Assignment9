@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CampusEats Catalogue</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>CampusEats Catalogue</h1>
+  <p class="sub">The menu &mdash; served by a secured REST API (Node + Express + JWT)</p>
+
+  <!-- LOGIN: shown when there is no token -->
+  <section id="loginView" hidden>
+    <form id="loginForm">
+      <h3>Sign in</h3>
+      <input id="email" type="email" placeholder="Email" autocomplete="username" required>
+      <input id="password" type="password" placeholder="Password" autocomplete="current-password" required>
+      <button type="submit">Log in</button>
+      <p id="loginMsg" class="msg" role="alert"></p>
+      <p class="hint">
+        Demo accounts &mdash;
+        customer: <code>asha@campus.edu</code> / <code>customer123</code>,
+        restaurant: <code>mealhub@campus.edu</code> / <code>resto123</code>
+      </p>
+    </form>
+  </section>
+
+  <!-- MENU: shown once logged in -->
+  <section id="menuView" hidden>
+    <div class="bar">
+      <span>Signed in as <strong id="who"></strong> <span id="roleBadge" class="badge"></span></span>
+      <span>
+        <label class="inline"><input type="checkbox" id="vegOnly"> Veg only</label>
+        <button id="logoutBtn" class="ghost" type="button">Log out</button>
+      </span>
+    </div>
+
+    <p id="listMsg" class="msg" role="alert"></p>
+    <div id="list">Loading&hellip;</div>
+
+    <!-- only restaurants (or admins) see this form; the server enforces it too -->
+    <form id="addForm" hidden>
+      <h3>Add a dish</h3>
+      <input id="name" placeholder="Dish name" required>
+      <input id="price" type="number" min="0" placeholder="Price (rupees)">
+      <label class="inline"><input type="checkbox" id="veg" checked> Veg</label>
+      <button type="submit">Add dish</button>
+    </form>
+    <p id="viewOnly" class="hint" hidden>Customers can browse the menu. Only restaurants can add or remove dishes.</p>
+  </section>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const CAN_EDIT = ['restaurant', 'admin'];
+
+    // never put server data into innerHTML unescaped (stops XSS)
+    const esc = (s) => String(s).replace(/[&<>"']/g,
+      (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    // ---- session: the JWT lives in sessionStorage (cleared when the tab closes)
+    const session = {
+      get token() { return sessionStorage.getItem('token'); },
+      get role()  { return sessionStorage.getItem('role'); },
+      get email() { return sessionStorage.getItem('email'); },
+      save(t, r, e) { sessionStorage.setItem('token', t); sessionStorage.setItem('role', r); sessionStorage.setItem('email', e); },
+      clear() { sessionStorage.clear(); },
+    };
+
+    // every API call sends the token as "Authorization: Bearer <token>"
+    async function api(url, options = {}) {
+      const res = await fetch(url, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session.token ? { Authorization: 'Bearer ' + session.token } : {}),
+          ...(options.headers || {}),
+        },
+      });
+      if (res.status === 401 && session.token) {      // token expired / invalid -> back to login
+        session.clear();
+        show();
+        $('loginMsg').textContent = 'Session expired. Please log in again.';
+      }
+      return res;
+    }
+
+    function show() {
+      const loggedIn = !!session.token;
+      $('loginView').hidden = loggedIn;
+      $('menuView').hidden = !loggedIn;
+      if (!loggedIn) return;
+      const canEdit = CAN_EDIT.includes(session.role);
+      $('who').textContent = session.email;
+      $('roleBadge').textContent = session.role;
+      $('addForm').hidden = !canEdit;
+      $('viewOnly').hidden = canEdit;
+      load();
+    }
+
+    // 1. LOGIN: POST /login -> token
+    $('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      $('loginMsg').textContent = '';
+      const res = await api('/login', {
+        method: 'POST',
+        body: JSON.stringify({ email: $('email').value, password: $('password').value }),
+      });
+      const data = await res.json();
+      if (!res.ok) { $('loginMsg').textContent = data.error === 'bad login' ? 'Wrong email or password.' : data.error; return; }
+      session.save(data.token, data.role, data.email);
+      e.target.reset();
+      show();
+    });
+
+    $('logoutBtn').addEventListener('click', () => { session.clear(); show(); });
+    $('vegOnly').addEventListener('change', load);
+
+    // 2. READ: GET /items, then draw the list
+    async function load() {
+      $('listMsg').textContent = '';
+      const res = await api('/items' + ($('vegOnly').checked ? '?veg=true' : ''));
+      if (!res.ok) { if (res.status !== 401) $('listMsg').textContent = 'Could not load the menu.'; return; }
+      const items = await res.json();
+      const canEdit = CAN_EDIT.includes(session.role);
+      $('list').innerHTML = items.length ? items.map(i =>
+        `<div class="dish ${i.veg ? 'veg' : 'nonveg'}">` +
+          `<span class="name">${esc(i.name)} <small>${i.veg ? 'Veg' : 'Non-veg'}</small></span>` +
+          `<span class="right"><span class="price">&#8377;${esc(i.price)}</span>` +
+          (canEdit ? `<button class="danger" data-id="${i.id}" type="button">Remove</button>` : '') +
+          `</span></div>`).join('') : '<p class="hint">No dishes yet.</p>';
+    }
+
+    // 3. DELETE: the Remove buttons (restaurant/admin only)
+    $('list').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-id]');
+      if (!btn) return;
+      const res = await api('/items/' + btn.dataset.id, { method: 'DELETE' });
+      if (res.status === 403) $('listMsg').textContent = 'You are not allowed to remove dishes.';
+      load();
+    });
+
+    // 4. WRITE: the form POSTs a new dish, then refreshes the list
+    $('addForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      $('listMsg').textContent = '';
+      const res = await api('/items', {
+        method: 'POST',
+        body: JSON.stringify({ name: $('name').value, price: $('price').value, veg: $('veg').checked }),
+      });
+      if (res.status === 403) { $('listMsg').textContent = 'Forbidden: only restaurants can add dishes.'; return; }
+      if (res.status === 422) { $('listMsg').textContent = (await res.json()).error; return; }
+      e.target.reset();
+      $('veg').checked = true;
+      load();
+    });
+
+    show();
+  </script>
+</body>
+</html>

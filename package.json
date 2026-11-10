@@ -1,0 +1,15 @@
+{
+  "name": "catalogue",
+  "version": "2.0.0",
+  "description": "CampusEats Catalogue - Node & Express REST API secured with JWT + bcrypt",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.2"
+  }
+}
